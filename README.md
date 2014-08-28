@@ -1,0 +1,6 @@
+tailEventLog
+============
+
+```sh
+> tailEventlog Application
+```
