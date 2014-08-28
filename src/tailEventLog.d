@@ -1,11 +1,14 @@
 /*
   tailEventLog.d
 
+  *** set compile option -version=Unicode
+  *** but use ANSI version Win32API (OpenEventLogA, ReadEventLogA) for char *
+
   release
   c:\dmd2\windows\bin\dmd -version=Unicode
     -run tailEventLog.d logname
   test
-  c:\dmd2\windows\bin\dmd -version=DisplayEvents -version=Unicode
+  c:\dmd2\windows\bin\dmd -version=Unicode -version=DisplayEvents
     -run tailEventLog.d logname
 
   logname: Application, Security, System
@@ -29,18 +32,33 @@ import core.time;
 // import std.file;
 // import sqlite3;
 
-extern(Windows) {
+extern(Windows) { // force use ANSI version for char * parameters
+  // kernel32.lib
+  HANDLE CreateEventA(
+    core.sys.windows.windows.LPSECURITY_ATTRIBUTES lpEventAttributes,
+    BOOL bManualReset, BOOL bInitialState, LPCTSTR lpName);
+  DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
+  BOOL CloseHandle(HANDLE hObject);
+  // advapi32.lib
   HANDLE OpenEventLogA(LPCTSTR lpUNCServerName, LPCTSTR lpSourceName);
-  BOOL CloseEventLog(HANDLE hEventLog);
   BOOL ReadEventLogA(HANDLE hEventLog, DWORD dwReadFlags, DWORD dwRecordOffset,
     LPVOID lpBuffer, DWORD nNumberOfBytesToRead,
     DWORD *pnBytesRead, DWORD *pnMinNumberOfBytesNeeded);
   BOOL GetNumberOfEventLogRecords(HANDLE hEventLog, PDWORD NumberOfRecords);
+  BOOL NotifyChangeEventLog(HANDLE hEventLog, HANDLE hEvent);
+  BOOL CloseEventLog(HANDLE hEventLog);
 }
 
 alias int function(uint lc, EVENTLOGRECORD *pelr) eventcbfunc_t; // custom
 
 const size_t BUF_SIZE = 4096;
+
+private int fake_strlen(const char *zString)
+{
+  int i;
+  for(i = 0; zString[i]; ++i){}
+  return i;
+}
 
 int getLastLogs(uint *rn, char *computer, char *logname, eventcbfunc_t cbfunc)
 {
@@ -87,11 +105,57 @@ version(DisplayEvents){
 
 int waitForNewEventLogs(char *computer, char *logname)
 {
+  HANDLE eventlog = OpenEventLogA(computer, logname);
+  if(!eventlog) return -1;
+  HANDLE event = CreateEventA(null, true, false, null);
+  // attr, reset, init, name
+  if(!event){
+    CloseEventLog(eventlog);
+    return -2;
+  }
+  NotifyChangeEventLog(eventlog, event);
+  WaitForSingleObject(event, core.sys.windows.windows.INFINITE);
+  CloseHandle(event);
+  CloseEventLog(eventlog);
   return 0;
 }
 
-int dispEvent(uint lc, EVENTLOGRECORD *pelr)
+int dispEvents(uint lc, EVENTLOGRECORD *pelr)
 {
+  LPBYTE src = cast(LPBYTE)pelr + EVENTLOGRECORD.sizeof;
+  LPBYTE cmp = src + fake_strlen(cast(char *)src) + 1;
+  LPBYTE sp = cast(LPBYTE)pelr + pelr.StringOffset;
+  DWORD ns = pelr.NumStrings;
+  DWORD ss;
+  writefln("event - %3d, -Ln:0x%08x, Src:%s, Cmp:%s",
+    lc, *cast(DWORD *)(cast(LPBYTE)pelr + pelr.Length - DWORD.sizeof),
+    cast(LPSTR)src, cast(LPSTR)cmp
+  );
+  writefln("Ln:0x%08x, Rs:%3d, Rn:%10d, TG:%10d, TW:%10d",
+    pelr.Length, pelr.Reserved, pelr.RecordNumber,
+    pelr.TimeGenerated, pelr.TimeWritten
+  );
+  writefln("EI:0x%08x, ET:%3d, NS:%3d, EC:%3d, RF:%3d",
+    pelr.EventID, pelr.EventType, pelr.NumStrings,
+    pelr.EventCategory, pelr.ReservedFlags
+  );
+  writef("CR:%10d, SO:0x%08x, USL:%3d, USO:0x%08x, ",
+    pelr.ClosingRecordNumber, pelr.StringOffset,
+    pelr.UserSidLength, pelr.UserSidOffset
+  );
+  writefln("DL:%3d, DO:0x%08x",
+    pelr.DataLength, pelr.DataOffset
+  );
+  for(ss = 0; ss < ns; ss++){
+    writefln("%3d: [%s]", ss, cast(LPSTR)sp);
+    sp += fake_strlen(cast(char *)sp) + 1;
+  }
+  return 0;
+}
+
+int caughtEvents(uint lc, EVENTLOGRECORD *pelr)
+{
+  writeln(__FUNCTION__);
   return 0;
 }
 
@@ -99,7 +163,17 @@ int tailEventLog(string logname)
 {
   uint rn = 0;
   writefln("%s log", logname);
-  getLastLogs(&rn, cast(char *)0, cast(char *)logname.toMBSz(), &dispEvent);
+  char *zcomputer = null;
+  char *zlogname = cast(char *)logname.toMBSz();
+version(DisplayEvents){
+  eventcbfunc_t callback = &dispEvents;
+}else{
+  eventcbfunc_t callback = &caughtEvents;
+}
+  while(true){
+    getLastLogs(&rn, zcomputer, zlogname, callback);
+    waitForNewEventLogs(zcomputer, zlogname);
+  }
   return 0;
 }
 
