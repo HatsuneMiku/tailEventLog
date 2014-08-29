@@ -32,15 +32,15 @@ import core.time;
 // import std.file;
 // import sqlite3;
 
-extern(Windows) { // force use ANSI version for char * parameters
+extern(Windows) { // force use ANSI API for char * parameters (LPCTSTR->LPCSTR)
   // kernel32.lib
   HANDLE CreateEventA(
     core.sys.windows.windows.LPSECURITY_ATTRIBUTES lpEventAttributes,
-    BOOL bManualReset, BOOL bInitialState, LPCTSTR lpName);
+    BOOL bManualReset, BOOL bInitialState, LPCSTR lpName);
   DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
   BOOL CloseHandle(HANDLE hObject);
   // advapi32.lib
-  HANDLE OpenEventLogA(LPCTSTR lpUNCServerName, LPCTSTR lpSourceName);
+  HANDLE OpenEventLogA(LPCSTR lpUNCServerName, LPCSTR lpSourceName);
   BOOL ReadEventLogA(HANDLE hEventLog, DWORD dwReadFlags, DWORD dwRecordOffset,
     LPVOID lpBuffer, DWORD nNumberOfBytesToRead,
     DWORD *pnBytesRead, DWORD *pnMinNumberOfBytesNeeded);
