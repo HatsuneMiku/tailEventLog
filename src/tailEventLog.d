@@ -49,9 +49,15 @@ extern(Windows) { // force use ANSI API for char * parameters (LPCTSTR->LPCSTR)
   BOOL CloseEventLog(HANDLE hEventLog);
 }
 
-alias int function(uint lc, EVENTLOGRECORD *pelr) eventcbfunc_t; // custom
-
-const size_t BUF_SIZE = 4096;
+wchar *_ws2wc(wstring ws){ return cast(wchar *)(ws~"(U)\0").ptr; }
+char *_s2c(string s){ return cast(char *)s.toMBSz(); }
+version(Unicode){
+  alias wstring _string;
+  wchar *_T(wstring str){ return _ws2wc(str); }
+}else{
+  alias string _string;
+  char *_T(string str){ return _s2c(str); }
+}
 
 private int fake_strlen(const char *zString)
 {
@@ -60,23 +66,22 @@ private int fake_strlen(const char *zString)
   return i;
 }
 
-int getLastLogs(uint *rn, char *computer, char *logname, eventcbfunc_t cbfunc)
+const size_t BUF_SIZE = 4096;
+
+alias int function(uint lc, EVENTLOGRECORD *pelr) eventcbfunc_t; // custom
+
+int getLastLogs(uint *rn, uint direc, HANDLE eventlog, eventcbfunc_t cbfunc)
 {
   BYTE buf[BUF_SIZE];
   EVENTLOGRECORD *pelr;
   uint rd = 0, nle = 0;
   DWORD rc = 0, lc = 0, mrn = 0;
-  HANDLE eventlog = OpenEventLogA(computer, logname);
-  if(!eventlog) return -1;
 version(DisplayEvents){
-  if(!GetNumberOfEventLogRecords(eventlog, &rc)){
-    CloseEventLog(eventlog);
-    return -2;
-  }
+  if(!GetNumberOfEventLogRecords(eventlog, &rc)) return -1;
   writefln("There are events ... (%d)", rc);
 }
   while(ReadEventLogA(eventlog,
-    EVENTLOG_BACKWARDS_READ | EVENTLOG_SEQUENTIAL_READ,     // read flags
+    direc | EVENTLOG_SEQUENTIAL_READ,   // read flags
     0,              // record offset (use with EVENTLOG_SEEK_READ)
     (pelr = cast(EVENTLOGRECORD *)buf), // a pointer to a buffer (never NULL)
     buf.sizeof,     // the number of bytes to read (the size of the buffer)
@@ -99,24 +104,13 @@ version(DisplayEvents){
 version(DisplayEvents){
   writefln("Last record number ... (%d)", *rn);
 }
-  CloseEventLog(eventlog);
   return 0;
 }
 
-int waitForNewEventLogs(char *computer, char *logname)
+int waitForNewEventLogs(HANDLE eventlog, HANDLE event)
 {
-  HANDLE eventlog = OpenEventLogA(computer, logname);
-  if(!eventlog) return -1;
-  HANDLE event = CreateEventA(null, true, false, null);
-  // attr, reset, init, name
-  if(!event){
-    CloseEventLog(eventlog);
-    return -2;
-  }
   NotifyChangeEventLog(eventlog, event);
   WaitForSingleObject(event, core.sys.windows.windows.INFINITE);
-  CloseHandle(event);
-  CloseEventLog(eventlog);
   return 0;
 }
 
@@ -170,9 +164,17 @@ version(DisplayEvents){
 }else{
   eventcbfunc_t callback = &caughtEvents;
 }
-  while(true){
-    getLastLogs(&rn, zcomputer, zlogname, callback);
-    waitForNewEventLogs(zcomputer, zlogname);
+  HANDLE eventlog = OpenEventLogA(zcomputer, zlogname);
+  if(!eventlog) return -1;
+  scope(exit) CloseEventLog(eventlog);
+  HANDLE event = CreateEventA(null, true, false, null); // attr,reset,init,name
+  if(!event) return -2;
+  scope(exit) CloseHandle(event);
+  // seek to tail of eventlog
+  getLastLogs(&rn, EVENTLOG_BACKWARDS_READ, eventlog, callback); // *backward*
+  while(true){ // must read forward once before next event
+    getLastLogs(&rn, EVENTLOG_FORWARDS_READ, eventlog, callback); // *forward*
+    waitForNewEventLogs(eventlog, event);
   }
   return 0;
 }
